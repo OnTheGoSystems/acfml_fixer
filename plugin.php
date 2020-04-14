@@ -53,15 +53,21 @@ namespace WPML\ACF\Fixer {
 		return (int) $wpdb->get_var( "SELECT COUNT(ID) FROM {$wpdb->posts}" );
 	}
 
-	function getNextChunk( $chunkSize ) {
+	function getChunk( $chunkSize, $offset ) {
 		$metaWithKeyStartingWithUnderScore = function ( $meta ) {
 			return startsWith( $meta->meta_key, '_' );
 		};
 
+		return array_filter(
+			getPostMetaChunk( $chunkSize, $offset ),
+			$metaWithKeyStartingWithUnderScore
+		);
+	}
+
+	function getNextChunk( $chunkSize ) {
 		$offset = 0;
 
-		while ( $postMeta = getPostMetaChunk( $chunkSize, $offset ) ) {
-			$postMeta = array_filter( $postMeta, $metaWithKeyStartingWithUnderScore );
+		while ( $postMeta = getChunk( $chunkSize, $offset ) ) {
 			yield $postMeta;
 			$offset += $chunkSize;
 		}
@@ -84,7 +90,7 @@ namespace WPML\ACF\Fixer {
 	function isAffected( $meta ) {
 		$meta->meta_value = maybe_unserialize( $meta->meta_value );
 
-		return is_array( $meta->meta_value  ) && ( isset( $meta->meta_value [ $meta->meta_key ] ) || ( count( $meta->meta_value  ) > THRESHOLD && hasLargeNestedElement( $meta ) ) );
+		return is_array( $meta->meta_value ) && ( isset( $meta->meta_value [ $meta->meta_key ] ) || ( count( $meta->meta_value ) > THRESHOLD && hasLargeNestedElement( $meta ) ) );
 	}
 
 	function clearMeta( $meta ) {
@@ -160,9 +166,74 @@ namespace WPML\ACF\Fixer {
 			);
 		};
 	}
+
+	class AdminProcess {
+
+		const DONE   = 'acfml_fixer_process_done';
+		const OFFSET = 'acfml_fixer_process_offset';
+
+		public static function isFinished() {
+			return (bool) get_option( self::DONE, false );
+		}
+
+		public static function finish() {
+			update_option( self::DONE, true );
+		}
+
+		public static function getOffset() {
+			return (int) get_option( self::OFFSET, 0 );
+		}
+
+		public static function updateOffset( $offset ) {
+			update_option( self::OFFSET, $offset );
+		}
+
+		public static function displayNotice( $offset, $total ) {
+			add_action( 'admin_notices', function () use ( $offset, $total ) {
+				?>
+                <div class="notice notice-success is-dismissible">
+                    <p><?php printf( 'ACFML Cleaner has procesed %d / %d posts', $offset, $total ) ?></p>
+                </div>
+				<?php
+			} );
+		}
+	}
+
+	class Lock {
+		const LOCK = 'acfml_fixer_process_locked';
+
+		public static function isLocked() {
+			return (bool) get_option( self::LOCK, false );
+		}
+
+		public static function setLock() {
+			update_option( self::LOCK, true );
+		}
+
+		public static function releaseLock() {
+			update_option( self::LOCK, false );
+		}
+
+		public static function runLockableProcess( $fn ) {
+			if ( self::isLocked() ) {
+				return null;
+			}
+
+			self::setLock();
+			$result = $fn();
+			self::releaseLock();
+
+			return $result;
+		}
+	}
 }
 
 namespace {
+
+	use WPML\ACF\Fixer\AdminProcess;
+	use WPML\ACF\Fixer\Lock;
+	use function WPML\ACF\Fixer\getChunk;
+	use function WPML\ACF\Fixer\getPostCount;
 
 	if ( defined( 'WP_CLI' ) ) {
 		/**
@@ -179,4 +250,31 @@ namespace {
 		$list = \WPML\ACF\Fixer\createListCommandHandler();
 		\WP_CLI::add_command( 'acfml list', $list );
 	}
+
+	add_action( 'admin_init', function () {
+		if ( ! is_admin() || ! is_user_logged_in() || AdminProcess::isFinished() ) {
+			return;
+		}
+
+		Lock::runLockableProcess( function () {
+			$offset = AdminProcess::getOffset();
+			$total  = getPostCount();
+
+			$chunkSize = 1000;
+			$chunkNUms = defined( 'ACFML_CLEANER_CHUNK_NUMS' ) ? ACFML_CLEANER_CHUNK_NUMS : 1;
+			for ( $i = 0; $i < $chunkNUms && $offset < $total; $i ++ ) {
+				$postMetas = getChunk( $chunkSize, $offset );
+				array_map( 'WPML\ACF\Fixer\maybeUpdateMeta', $postMetas );
+
+				$offset += $chunkSize;
+				AdminProcess::updateOffset( $offset );
+			}
+
+			AdminProcess::displayNotice( $offset, $total );
+
+			if ( $offset >= $total ) {
+				AdminProcess::finish();
+			}
+		} );
+	} );
 }
