@@ -58,7 +58,7 @@ namespace WPML\ACF\Fixer {
 			return strpos( $haystack, $needle ) === 0;
 		};
 		$metaWithKeyStartingWithUnderScore = function ( $meta ) use ( $startsWith ) {
-			return $startsWith( $meta->meta_key, '_' );
+			return ! $startsWith( $meta->meta_key, '_' );
 		};
 
 		return array_filter(
