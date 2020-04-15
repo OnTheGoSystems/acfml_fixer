@@ -54,8 +54,11 @@ namespace WPML\ACF\Fixer {
 	}
 
 	function getChunk( $chunkSize, $offset ) {
-		$metaWithKeyStartingWithUnderScore = function ( $meta ) {
-			return startsWith( $meta->meta_key, '_' );
+		$startsWith = function ( $haystack, $needle ) {
+			return strpos( $haystack, $needle ) === 0;
+		};
+		$metaWithKeyStartingWithUnderScore = function ( $meta ) use ( $startsWith ) {
+			return $startsWith( $meta->meta_key, '_' );
 		};
 
 		return array_filter(
